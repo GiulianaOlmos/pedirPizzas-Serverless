@@ -1,37 +1,104 @@
-'use strict';
+"use strict";
 
-const uuid = require('uuid');
-const AWS = require('aws-sdk');
+const uuid = require("uuid");
+const AWS = require("aws-sdk");
+
+const orderMetadataManager = require("./orderMetaDataManager");
 
 var sqs = new AWS.SQS({ region: process.env.REGION });
 const QUEUE_URL = process.env.PENDING_ORDER_QUEUE;
 
 module.exports.hacerPedido = (event, context, callback) => {
-	console.log('HacerPedido fue llamada');
-	const orderId = uuid.v1();
+  console.log("HacerPedido fue llamada");
 
-	const params = {
-		MessageBody: JSON.stringify({ orderId: orderId }),
-		QueueUrl: QUEUE_URL
-	};
+  const body = JSON.parse(event.body);
 
-	sqs.sendMessage(params, function(err, data) {
-		if (err) {
-			sendResponse(500, err, callback);
-		} else {
-			const message = {
-				orderId: orderId,
-				messageId: data.MessageId
-			};
-			sendResponse(200, message, callback);
-		}
-	});
+  const order = {
+    orderId: uuid.v1(),
+    name: body.name,
+    address: body.address,
+    pizzas: body.pizzas,
+    timestamp: Date.now(),
+  };
+
+  const params = {
+    MessageBody: JSON.stringify(order),
+    QueueUrl: QUEUE_URL,
+  };
+
+  sqs.sendMessage(params, function (err, data) {
+    if (err) {
+      sendResponse(500, err, callback);
+    } else {
+      const message = {
+        order: order,
+        messageId: data.MessageId,
+      };
+      sendResponse(200, message, callback);
+    }
+  });
+};
+
+module.exports.prepararPedido = (event, context, callback) => {
+  console.log("prepararPedido fue llamda");
+
+  const order = JSON.parse(event.Records[0].body);
+
+  orderMetadataManager
+    .saveCompletedOrder(order)
+    .then((data) => {
+      callback();
+    })
+    .catch((error) => {
+      callback(error);
+    });
+};
+
+module.exports.enviarPedido = (event, context, callback) => {
+  const record = event.Records[0];
+  if (record.eventName === "INSERT") {
+    console.log("deliverOrder");
+
+    const orderId = record.dynamodb.Keys.orderId.S;
+
+    orderMetadataManager
+      .deliverOrder(orderId)
+      .then((data) => {
+        console.log(data);
+        callback();
+      })
+      .catch((error) => {
+        callback(error);
+      });
+  } else {
+    console.log("is not a new record");
+    callback();
+  }
+};
+
+module.exports.estadoPedido = (event, context, callback) => {
+  console.log("estadoPedido fue llamda");
+
+  const orderId = event.pathParameters && event.pathParameters.orderId;
+  
+	if (orderId !== null) {
+		orderMetadataManager
+			.getOrder(orderId)
+			.then(order => {
+				sendResponse(200, `El estado de la orden: ${orderId} es ${order.delivery_status}`, callback);
+			})
+			.catch(error => {
+				sendResponse(500, 'Hubo un error al procesar el pedido', callback);
+			});
+	} else {
+		sendResponse(400, 'Falta el orderId', callback);
+	}
 };
 
 function sendResponse(statusCode, message, callback) {
-	const response = {
-		statusCode: statusCode,
-		body: JSON.stringify(message)
-	};
-	callback(null, response);
+  const response = {
+    statusCode: statusCode,
+    body: JSON.stringify(message),
+  };
+  callback(null, response);
 }
